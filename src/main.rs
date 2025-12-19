@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
 
     let socket = Arc::new(socket);
 
