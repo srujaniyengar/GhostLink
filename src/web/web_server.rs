@@ -104,3 +104,133 @@ async fn post_peer_ip(Json(input): Json<ConnectionRequest>) -> Result<(), (Statu
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::shared_state::{AppState, Status};
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use tower::ServiceExt;
+
+    /// Helper to create a fresh state for each test
+    fn create_test_state() -> SharedState {
+        Arc::new(RwLock::new(AppState::new(None, Status::Disconnected)))
+    }
+
+    /// Checks that before STUN runs (when public_ip is None), the `/api/ip` endpoint
+    /// correctly returns `null` instead of crashing or returning an empty string.
+    #[tokio::test]
+    async fn test_get_ip_initial_is_null() {
+        let state = create_test_state();
+        let app = router(state);
+
+        // 1. Create a mock request
+        let request = Request::builder()
+            .uri("/api/ip")
+            .body(Body::empty())
+            .unwrap();
+
+        // 2. Send it to the router
+        let response = app.oneshot(request).await.unwrap();
+
+        // 3. Assertions
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse JSON body
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_json, json!({ "public_ip": null }));
+    }
+
+    /// Manually forces the internal state to `Punching`, then calls the API to ensure
+    /// the JSON response accurately reflects that change. This proves the "Shared State" logic works.
+    #[tokio::test]
+    async fn test_get_status_returns_current_state() {
+        let state = create_test_state();
+
+        // Simulate a state change
+        {
+            let mut guard = state.write().await;
+            guard.status = Status::_Punching;
+        }
+
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Matches the enum variant name serialization
+        assert_eq!(body_json, json!({ "status": "_Punching" }));
+    }
+
+    /// Sends a valid JSON packet (IP + Port) to `/api/connect` to confirm the server
+    /// accepts valid connection requests with a `200 OK`.
+    #[tokio::test]
+    async fn test_post_connect_valid_payload() {
+        let state = create_test_state();
+        let app = router(state);
+
+        // 1. Create a valid JSON payload
+        let payload = json!({
+            "ip": "192.168.1.50",
+            "port": 9000
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/connect")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+
+        // 2. Send request
+        let response = app.oneshot(request).await.unwrap();
+
+        // 3. Expect 200 OK
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Sends broken JSON (missing the "port") to confirm the server rejects it with
+    /// a `422 Unprocessable Entity` error, ensuring the app doesn't crash on bad input.
+    #[tokio::test]
+    async fn test_post_connect_invalid_payload_fails() {
+        let state = create_test_state();
+        let app = router(state);
+
+        // 1. Create INVALID payload (missing "port")
+        let payload = json!({
+            "ip": "192.168.1.50"
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/connect")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // 2. Expect 422 Unprocessable Entity (Standard Axum error for bad JSON)
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}
