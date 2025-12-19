@@ -1,9 +1,11 @@
 mod config;
+mod messaging;
 mod net;
 mod web;
 
 use crate::{
     config::Config,
+    messaging::message_manager::MessageManager,
     web::shared_state::Status,
     web::{shared_state::AppState, web_server},
 };
@@ -19,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load();
     info!("Config loaded. Target STUN: {}", config.stun_server);
 
-    let shared_state = Arc::new(RwLock::new(AppState::new(None, Status::Disconnected)));
+    let shared_state = Arc::new(RwLock::new(AppState::new(None, Status::Disconnected, None)));
 
     let state_clone = Arc::clone(&shared_state);
     let web = tokio::spawn(async move {
@@ -28,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
 
     let socket = Arc::new(socket);
 
@@ -47,6 +49,15 @@ async fn main() -> anyhow::Result<()> {
             warn!("You may not be reachable from the internet.");
         }
     };
+
+    // wait for user to click connect
+    let peer_addr = {
+        let locked_state = shared_state.read().await;
+        locked_state.peer_ip
+    };
+    if let Some(peer_addr) = peer_addr {
+        MessageManager::new(Arc::clone(&socket), peer_addr, config.timeout_secs).await?;
+    }
 
     web.await?;
 
