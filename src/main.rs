@@ -3,6 +3,7 @@ mod net;
 mod web;
 
 use crate::config::Config;
+use crate::web::web_server;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, warn};
@@ -33,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    if let Err(e) = web::serve(config.web_port).await {
+    if let Err(e) = web_server::serve(config.web_port).await {
         error!("Web server crahsed: {:?}", e);
     }
 
