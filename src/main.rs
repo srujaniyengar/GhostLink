@@ -1,5 +1,6 @@
 mod config;
 mod net;
+mod web;
 
 use crate::config::Config;
 use std::sync::Arc;
@@ -30,6 +31,11 @@ async fn main() -> anyhow::Result<()> {
             error!("STUN Failed: {:?}", e);
             warn!("You may not be reachable from the internet.");
         }
+    };
+
+    if let Err(e) = web::serve(config.web_port).await {
+        error!("Web server crahsed: {:?}", e);
     }
+
     Ok(())
 }
