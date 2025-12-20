@@ -4,7 +4,7 @@
 //! 1. The Static UI files (HTML/JS/CSS) from the `static/` directory.
 //! 2. The API endpoints (e.g., status, configuration) for the frontend.
 
-use super::shared_state::SharedState;
+use super::shared_state::{Command, SharedState};
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -53,7 +53,7 @@ pub fn router(shared_state: SharedState) -> Router {
         .route("/api/status", get(get_status))
         .route("/api/connect", post(post_peer_ip))
         // Serve the "static" directory for all non-API requests
-        .fallback_service(ServeDir::new("static"))
+        .fallback_service(ServeDir::new("static").append_index_html_on_directories(true))
         .layer(CorsLayer::permissive())
         .with_state(shared_state)
 }
@@ -101,6 +101,7 @@ async fn post_peer_ip(
     State(state): State<SharedState>,
     Json(input): Json<ConnectionRequest>,
 ) -> Result<(), (StatusCode, String)> {
+    
     debug!("peer to connect: {}:{}", input.ip, input.port);
 
     let ip_addr = SocketAddr::new(
@@ -113,8 +114,14 @@ async fn post_peer_ip(
         let mut data = state.write().await;
         data.peer_ip = Some(ip_addr);
     }
-    // TODO: Pass this information to the P2P networking layer to initiate hole punching.
-    // Example: state.write().await.target_peer = Some((input.ip, input.port));
+
+    let tx = { state.read().await.cmd_tx.clone() };
+    if let Err(e) = tx.send(Command::ConnectPeer).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Controller unavailable: {e}"),
+        ));
+    }
 
     Ok(())
 }
@@ -129,12 +136,18 @@ mod tests {
     };
     use serde_json::{Value, json};
     use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use tokio::sync::{RwLock, mpsc};
     use tower::ServiceExt;
 
     /// Helper to create a fresh state for each test
     fn create_test_state() -> SharedState {
-        Arc::new(RwLock::new(AppState::new(None, Status::Disconnected, None)))
+        let (cmd_tx, _) = mpsc::channel::<Command>(32);
+        Arc::new(RwLock::new(AppState::new(
+            None,
+            Status::Disconnected,
+            None,
+            cmd_tx,
+        )))
     }
 
     /// Checks that before STUN runs (when public_ip is None), the `/api/ip` endpoint

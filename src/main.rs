@@ -6,11 +6,17 @@ mod web;
 use crate::{
     config::Config,
     messaging::message_manager::MessageManager,
-    web::shared_state::Status,
-    web::{shared_state::AppState, web_server},
+    web::{
+        shared_state::{AppState, Command, SharedState, Status},
+        web_server,
+    },
 };
+use anyhow::Result;
 use std::sync::Arc;
-use tokio::{net::UdpSocket, sync::RwLock};
+use tokio::{
+    net::UdpSocket,
+    sync::{RwLock, mpsc},
+};
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -21,7 +27,14 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load();
     info!("Config loaded. Target STUN: {}", config.stun_server);
 
-    let shared_state = Arc::new(RwLock::new(AppState::new(None, Status::Disconnected, None)));
+    let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(32);
+
+    let shared_state = Arc::new(RwLock::new(AppState::new(
+        None,
+        Status::Disconnected,
+        None,
+        cmd_tx,
+    )));
 
     let state_clone = Arc::clone(&shared_state);
     let web = tokio::spawn(async move {
@@ -30,6 +43,18 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    start_controller(&config, &shared_state, cmd_rx).await?;
+
+    web.await?;
+
+    Ok(())
+}
+
+async fn start_controller(
+    config: &Config,
+    shared_state: &SharedState,
+    mut cmd_rx: mpsc::Receiver<Command>,
+) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
 
     let socket = Arc::new(socket);
@@ -50,16 +75,21 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // wait for user to click connect
-    let peer_addr = {
-        let locked_state = shared_state.read().await;
-        locked_state.peer_ip
-    };
-    if let Some(peer_addr) = peer_addr {
-        MessageManager::new(Arc::clone(&socket), peer_addr, config.timeout_secs).await?;
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            Command::ConnectPeer => {
+                info!("command recieved to connect");
+                let peer_addr = {
+                    let locked_state = shared_state.read().await;
+                    locked_state.peer_ip
+                };
+                if let Some(peer_addr) = peer_addr {
+                    MessageManager::new(Arc::clone(&socket), peer_addr, config.timeout_secs)
+                        .await?;
+                }
+            }
+        }
     }
-
-    web.await?;
 
     Ok(())
 }
