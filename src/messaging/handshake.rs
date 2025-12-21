@@ -102,14 +102,27 @@ pub async fn handshake(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::web::shared_state::Command;
     use super::*;
     use crate::web::shared_state::{AppState, Status};
     use std::{sync::Arc, time::Duration};
-    use tokio::net::UdpSocket;
+    use tokio::{
+        net::UdpSocket,
+        sync::{RwLock, mpsc},
+    };
 
     /// Helper to create a dummy state for testing
     fn create_dummy_state() -> Arc<RwLock<AppState>> {
-        Arc::new(RwLock::new(AppState::new(None, Status::Disconnected, None)))
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
+        // listen to cmd_rx and do nothing
+        tokio::spawn(async move { while let Some(_cmd) = cmd_rx.recv().await {} });
+
+        Arc::new(RwLock::new(AppState::new(
+            None,
+            Status::Disconnected,
+            None,
+            cmd_tx,
+        )))
     }
 
     /// Helper to create a socket bound to a random local port

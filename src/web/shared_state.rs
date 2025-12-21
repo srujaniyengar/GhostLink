@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 
 /// A thread-safe wrapper around the application state.
 pub type SharedState = Arc<RwLock<AppState>>;
@@ -8,7 +8,7 @@ pub type SharedState = Arc<RwLock<AppState>>;
 /// Represents the core runtime state of the GhostLink application.
 ///
 /// This struct holds data that needs to be shared across the web and controller.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct AppState {
     /// The public IP address and port of this node, as seen by the STUN server.
     ///
@@ -18,10 +18,14 @@ pub struct AppState {
     /// The current connectivity status of the P2P node.
     pub status: Status,
 
-    /// IP address of peer client is connecting to
+    /// IP address of peer client is connecting to.
     ///
-    /// This is `None` until client clicks connect with valid address
+    /// This is `None` until client clicks connect with valid address.
     pub peer_ip: Option<SocketAddr>,
+
+    /// A MPSC channel to send message to controller.
+    #[serde(skip)]
+    pub cmd_tx: mpsc::Sender<Command>,
 }
 
 impl AppState {
@@ -31,11 +35,17 @@ impl AppState {
     ///
     /// * `public_ip` - The initial public IP (usually `None` at startup).
     /// * `status` - The initial status (usually `Status::Disconnected`).
-    pub fn new(public_ip: Option<SocketAddr>, status: Status, peer_ip: Option<SocketAddr>) -> Self {
+    pub fn new(
+        public_ip: Option<SocketAddr>,
+        status: Status,
+        peer_ip: Option<SocketAddr>,
+        cmd_tx: mpsc::Sender<Command>,
+    ) -> Self {
         Self {
             public_ip,
             status,
             peer_ip,
+            cmd_tx,
         }
     }
 }
@@ -52,4 +62,11 @@ pub enum Status {
 
     /// A direct P2P connection has been successfully established.
     Connected,
+}
+
+/// Represents a command sent to controller
+#[derive(Debug)]
+pub enum Command {
+    /// Command sent from web server to controller to connect to a pper.
+    ConnectPeer,
 }
