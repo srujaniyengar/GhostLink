@@ -6,11 +6,17 @@ mod web;
 use crate::{
     config::Config,
     messaging::message_manager::MessageManager,
-    web::shared_state::Status,
-    web::{shared_state::AppState, web_server},
+    web::{
+        shared_state::{AppState, Command, SharedState, Status},
+        web_server,
+    },
 };
+use anyhow::Result;
 use std::sync::Arc;
-use tokio::{net::UdpSocket, sync::RwLock};
+use tokio::{
+    net::UdpSocket,
+    sync::{RwLock, mpsc},
+};
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -19,24 +25,44 @@ async fn main() -> anyhow::Result<()> {
     info!("GhostLink v1.0 Starting...");
 
     let config = Config::load();
-    info!("Config loaded. Target STUN: {}", config.stun_server);
+    info!("Config loaded...");
 
-    let shared_state = Arc::new(RwLock::new(AppState::new(None, Status::Disconnected, None)));
+    let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(32);
+
+    let shared_state = Arc::new(RwLock::new(AppState::new(
+        None,
+        Status::Disconnected,
+        None,
+        cmd_tx,
+    )));
 
     let state_clone = Arc::clone(&shared_state);
     let web = tokio::spawn(async move {
         if let Err(e) = web_server::serve(state_clone, config.web_port).await {
-            error!("Web server crahsed: {:?}", e);
+            error!("Web server crashed: {:?}", e);
         }
     });
 
-    let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
+    start_controller(&config, &shared_state, cmd_rx).await?;
 
+    web.await?;
+
+    Ok(())
+}
+
+async fn start_controller(
+    config: &Config,
+    shared_state: &SharedState,
+    mut cmd_rx: mpsc::Receiver<Command>,
+) -> Result<()> {
+    // 1. Bind the UDP Socket
+    let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
     let socket = Arc::new(socket);
 
     let local_port = socket.local_addr()?.port();
     info!("UDP Socket bound locally to port: {}", local_port);
 
+    // 2. Resolve Public IP
     match net::resolve_public_ip(&socket, &config.stun_server).await {
         Ok(public_addr) => {
             info!("STUN Success! Your Public ID is: {}", public_addr);
@@ -50,16 +76,34 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // wait for user to click connect
-    let peer_addr = {
-        let locked_state = shared_state.read().await;
-        locked_state.peer_ip
-    };
-    if let Some(peer_addr) = peer_addr {
-        MessageManager::new(Arc::clone(&socket), peer_addr, config.timeout_secs).await?;
-    }
+    // 3. Command Loop (Wait for user to click "Connect" in UI)
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            Command::ConnectPeer => {
+                info!("Command received: ConnectPeer");
+                let peer_addr = {
+                    let locked_state = shared_state.read().await;
+                    locked_state.peer_ip
+                };
 
-    web.await?;
+                if let Some(peer_addr) = peer_addr {
+                    info!("Initiating handshake with: {}", peer_addr);
+
+                    // establish messaging connection between peer and client
+                    if let Err(e) =
+                        MessageManager::new(Arc::clone(&socket), peer_addr, config.timeout_secs)
+                            .await
+                    {
+                        error!("Connection failed: {:?}", e);
+                    } else {
+                        info!("Handshake complete. MessageManager ready.");
+                    }
+                } else {
+                    warn!("Connect command received but no peer IP set.");
+                }
+            }
+        }
+    }
 
     Ok(())
 }
