@@ -93,7 +93,7 @@ async fn start_controller(
                     if let Err(e) = MessageManager::new(
                         Arc::clone(&socket),
                         peer_addr,
-                        Arc::clone(&shared_state),
+                        Arc::clone(shared_state),
                         config.timeout_secs,
                     )
                     .await
