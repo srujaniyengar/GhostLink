@@ -63,16 +63,23 @@ impl AppState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AppEvent {
+    /// Disconnected state
     Disconnected {
+        // public IP of client
         public_ip: Option<SocketAddr>,
     },
 
+    /// Punching state
     Punching {
+        // timeout: seconds left for handshake
         timeout: Option<u64>,
+        // update from server
         message: Option<String>,
     },
 
+    // Connected state
     Connected {
+        // message sent from peer
         message: Option<String>,
     },
 }

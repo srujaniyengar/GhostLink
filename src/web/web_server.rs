@@ -155,14 +155,22 @@ async fn post_peer_ip(
     Ok(())
 }
 
+/// Handler for `POST /api/events
+///
+/// Upgrades to an SSE to to update UI with server side events.
+///
+/// # Returns
+/// * `an SSE.
 async fn handle_sse(
     State(state): State<SharedState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     debug!("SEE request received");
 
+    // subscribe to event_tx
     let rx = state.read().await.event_tx.subscribe();
     let stream = BroadcastStream::new(rx);
 
+    // build stream with event_tx
     let stream = stream.map(|msg| match msg {
         Ok(app_event) => {
             let json = serde_json::to_string(&app_event).unwrap_or_default();
@@ -171,6 +179,7 @@ async fn handle_sse(
         Err(_) => Ok(Event::default().comment("missed message")),
     });
 
+    // return SSE stream
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(1))
@@ -525,8 +534,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// **Goal: Verify Initial State**
-    ///
     /// Checks that `/api/peer` returns `null` before any connection is made.
     #[tokio::test]
     async fn test_get_peer_initial_is_null() {
@@ -549,8 +556,6 @@ mod tests {
         assert_eq!(body_json, json!({ "peer_ip": null }));
     }
 
-    /// **Goal: Verify Peer Retrieval**
-    ///
     /// Manually sets the peer IP in the state and verifies the API returns it correctly.
     #[tokio::test]
     async fn test_get_peer_returns_set_value() {
@@ -578,5 +583,67 @@ mod tests {
         let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(body_json, json!({ "peer_ip": "10.0.0.99:5000" }));
+    }
+
+    /// Ensures that the `Punching` event serializes to the flat JSON structure
+    /// required by the frontend: { "status": "PUNCHING", "timeout": 123, "message": "..." }
+    #[test]
+    fn test_app_event_serialization_punching() {
+        let event = AppEvent::Punching {
+            timeout: Some(30),
+            message: Some("Hole punching started...".to_string()),
+        };
+
+        let json_str = serde_json::to_string(&event).unwrap();
+        let v: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["status"], "PUNCHING");
+        assert_eq!(v["timeout"], 30);
+        assert_eq!(v["message"], "Hole punching started...");
+    }
+
+    /// Ensures that the `Connected` event serializes correctly:
+    /// { "status": "CONNECTED", "message": "" }
+    #[test]
+    fn test_app_event_serialization_connected() {
+        let event = AppEvent::Connected {
+            message: Some("".to_string()),
+        };
+
+        let json_str = serde_json::to_string(&event).unwrap();
+        let v: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["status"], "CONNECTED");
+        assert_eq!(v["message"], "");
+        // Ensure "timeout" field is NOT present for Connected events
+        assert!(v.get("timeout").is_none());
+    }
+
+    /// Checks that `/api/events` accepts connections and returns the correct
+    /// Content-Type header for Server-Sent Events.
+    #[tokio::test]
+    async fn test_sse_endpoint_headers() {
+        let state = create_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/events")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // 1. Should be 200 OK
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 2. Content-Type must be "text/event-stream"
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .expect("Response missing content-type header")
+            .to_str()
+            .unwrap();
+
+        assert_eq!(content_type, "text/event-stream");
     }
 }
