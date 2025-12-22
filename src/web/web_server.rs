@@ -53,6 +53,7 @@ pub fn router(shared_state: SharedState) -> Router {
     Router::new()
         .route("/api/ip", get(get_ip))
         .route("/api/status", get(get_status))
+        .route("/api/peer", get(get_peer))
         .route("/api/connect", post(post_peer_ip))
         // Serve the "static" directory for all non-API requests
         .fallback_service(ServeDir::new("static").append_index_html_on_directories(true))
@@ -67,6 +68,16 @@ async fn get_ip(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let data = state.read().await;
     Json(json!({
         "public_ip": data.public_ip,
+    }))
+}
+
+/// Handler for `GET /api/peer`
+///
+/// Returns the ip and port of the connecting peer
+async fn get_peer(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let data = state.read().await;
+    Json(json!({
+        "peer_ip": data.peer_ip,
     }))
 }
 
@@ -481,5 +492,60 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// **Goal: Verify Initial State**
+    ///
+    /// Checks that `/api/peer` returns `null` before any connection is made.
+    #[tokio::test]
+    async fn test_get_peer_initial_is_null() {
+        let state = create_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/peer")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_json, json!({ "peer_ip": null }));
+    }
+
+    /// **Goal: Verify Peer Retrieval**
+    ///
+    /// Manually sets the peer IP in the state and verifies the API returns it correctly.
+    #[tokio::test]
+    async fn test_get_peer_returns_set_value() {
+        let state = create_test_state();
+
+        // 1. Simulate that a user has entered a peer IP
+        {
+            let mut guard = state.write().await;
+            guard.peer_ip = Some("10.0.0.99:5000".parse().unwrap());
+        }
+
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/peer")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_json, json!({ "peer_ip": "10.0.0.99:5000" }));
     }
 }
