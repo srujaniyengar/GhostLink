@@ -10,14 +10,19 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
+use futures::stream::Stream;
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    convert::Infallible,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
+    time::Duration,
 };
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::debug;
 
@@ -53,7 +58,9 @@ pub fn router(shared_state: SharedState) -> Router {
     Router::new()
         .route("/api/ip", get(get_ip))
         .route("/api/status", get(get_status))
+        .route("/api/peer", get(get_peer))
         .route("/api/connect", post(post_peer_ip))
+        .route("/api/events", get(handle_sse))
         // Serve the "static" directory for all non-API requests
         .fallback_service(ServeDir::new("static").append_index_html_on_directories(true))
         .layer(CorsLayer::permissive())
@@ -67,6 +74,16 @@ async fn get_ip(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let data = state.read().await;
     Json(json!({
         "public_ip": data.public_ip,
+    }))
+}
+
+/// Handler for `GET /api/peer`
+///
+/// Returns the ip and port of the connecting peer
+async fn get_peer(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let data = state.read().await;
+    Json(json!({
+        "peer_ip": data.peer_ip,
     }))
 }
 
@@ -138,9 +155,41 @@ async fn post_peer_ip(
     Ok(())
 }
 
+/// Handler for `POST /api/events
+///
+/// Upgrades to an SSE to to update UI with server side events.
+///
+/// # Returns
+/// * `an SSE.
+async fn handle_sse(
+    State(state): State<SharedState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    debug!("SEE request received");
+
+    // subscribe to event_tx
+    let rx = state.read().await.event_tx.subscribe();
+    let stream = BroadcastStream::new(rx);
+
+    // build stream with event_tx
+    let stream = stream.map(|msg| match msg {
+        Ok(app_event) => {
+            let json = serde_json::to_string(&app_event).unwrap_or_default();
+            Ok(Event::default().data(json))
+        }
+        Err(_) => Ok(Event::default().comment("missed message")),
+    });
+
+    // return SSE stream
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(1))
+            .text("keep-alive"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::shared_state::{AppState, Status};
+    use super::super::shared_state::{AppEvent, AppState, Status};
     use super::*;
     use axum::{
         body::Body,
@@ -148,12 +197,13 @@ mod tests {
     };
     use serde_json::{Value, json};
     use std::sync::Arc;
-    use tokio::sync::{RwLock, mpsc};
+    use tokio::sync::{RwLock, broadcast, mpsc};
     use tower::ServiceExt;
 
     /// Helper to create a fresh state for each test
     fn create_test_state() -> SharedState {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(32);
+        let (event_tx, _) = broadcast::channel::<AppEvent>(32);
         // listen to cmd_rx and do nothing
         tokio::spawn(async move { while let Some(_cmd) = cmd_rx.recv().await {} });
 
@@ -162,6 +212,7 @@ mod tests {
             Status::Disconnected,
             None,
             cmd_tx,
+            event_tx,
         )))
     }
 
@@ -481,5 +532,118 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Checks that `/api/peer` returns `null` before any connection is made.
+    #[tokio::test]
+    async fn test_get_peer_initial_is_null() {
+        let state = create_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/peer")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_json, json!({ "peer_ip": null }));
+    }
+
+    /// Manually sets the peer IP in the state and verifies the API returns it correctly.
+    #[tokio::test]
+    async fn test_get_peer_returns_set_value() {
+        let state = create_test_state();
+
+        // 1. Simulate that a user has entered a peer IP
+        {
+            let mut guard = state.write().await;
+            guard.peer_ip = Some("10.0.0.99:5000".parse().unwrap());
+        }
+
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/peer")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body_json, json!({ "peer_ip": "10.0.0.99:5000" }));
+    }
+
+    /// Ensures that the `Punching` event serializes to the flat JSON structure
+    /// required by the frontend: { "status": "PUNCHING", "timeout": 123, "message": "..." }
+    #[test]
+    fn test_app_event_serialization_punching() {
+        let event = AppEvent::Punching {
+            timeout: Some(30),
+            message: Some("Hole punching started...".to_string()),
+        };
+
+        let json_str = serde_json::to_string(&event).unwrap();
+        let v: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["status"], "PUNCHING");
+        assert_eq!(v["timeout"], 30);
+        assert_eq!(v["message"], "Hole punching started...");
+    }
+
+    /// Ensures that the `Connected` event serializes correctly:
+    /// { "status": "CONNECTED", "message": "" }
+    #[test]
+    fn test_app_event_serialization_connected() {
+        let event = AppEvent::Connected {
+            message: Some("".to_string()),
+        };
+
+        let json_str = serde_json::to_string(&event).unwrap();
+        let v: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["status"], "CONNECTED");
+        assert_eq!(v["message"], "");
+        // Ensure "timeout" field is NOT present for Connected events
+        assert!(v.get("timeout").is_none());
+    }
+
+    /// Checks that `/api/events` accepts connections and returns the correct
+    /// Content-Type header for Server-Sent Events.
+    #[tokio::test]
+    async fn test_sse_endpoint_headers() {
+        let state = create_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .uri("/api/events")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // 1. Should be 200 OK
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 2. Content-Type must be "text/event-stream"
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .expect("Response missing content-type header")
+            .to_str()
+            .unwrap();
+
+        assert_eq!(content_type, "text/event-stream");
     }
 }
