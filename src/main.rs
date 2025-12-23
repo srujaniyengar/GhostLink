@@ -99,6 +99,13 @@ async fn start_controller(
                 Some("STUN Resolution Successful".into()),
                 None,
             );
+
+            shared_state.write().await.set_nat_type(
+                net::get_nat_type(&socket, &config.stun_verifier, public_addr).await,
+                Some("NAT type resolved.".into()),
+                None,
+            );
+            debug!("Behind {:?} NAT type", shared_state.read().await.nat_type);
         }
         Err(e) => {
             error!("STUN Resolution Failed: {:?}", e);

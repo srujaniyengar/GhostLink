@@ -3,6 +3,7 @@
 //! This module handles low-level networking operations, specifically
 //! NAT Traversal and Public IP discovery using the STUN protocol.
 
+use super::web::shared_state::NatType;
 use anyhow::{Context, Result, bail};
 use std::net::SocketAddr;
 use stun::{
@@ -99,6 +100,39 @@ pub async fn resolve_public_ip(
     debug!("Public IP resolved: {}", public_addr);
 
     Ok(public_addr)
+}
+
+/// Checks if user is behind a symittric network.
+/// Resolves the public IP by querying another public STUN server and validates with previous
+/// response.
+///
+/// # Arguments
+///
+/// * `socket` - A reference to the UDP socket. The socket must be bound before calling.
+/// * `stun_server` - The address of the STUN server (e.g., "stun.l.google.com:19302").
+/// * `prev_addr` - The address resolved by previous STUN.
+///
+/// # Returns
+///
+/// * `NatType` - Indicates the type of NAT user's router is using.
+pub async fn get_nat_type(
+    socket: &UdpSocket,
+    stun_server: impl AsRef<str>,
+    prev_addr: SocketAddr,
+) -> NatType {
+    // resolve the public IP using new STUN server
+    resolve_public_ip(socket, stun_server).await.map_or_else(
+        // return `Unknown` if any error.
+        |_| NatType::Unknown,
+        |public_ip| {
+            // return type of NAT based on response.
+            if prev_addr == public_ip {
+                NatType::Cone
+            } else {
+                NatType::Symmetric
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -212,5 +246,98 @@ mod test {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Security Mismatch"));
+    }
+
+    /// Simulates a scenario where the second STUN server sees a DIFFERENT port than the first one.
+    /// This indicates the router is assigning new external ports for each destination (Symmetric).
+    #[tokio::test]
+    async fn test_get_nat_type_symmetric() {
+        // 1. Setup Mock Server 2 (Simulating a second STUN server)
+        let mock_server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = mock_server.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            let (len, client_addr) = mock_server.recv_from(&mut buf).await.unwrap();
+
+            let mut req = Message::new();
+            req.unmarshal_binary(&buf[..len]).unwrap();
+
+            // Reply with a DIFFERENT port than what the client expects from the first server
+            let mut resp = Message::new();
+            resp.transaction_id = req.transaction_id;
+            resp.build(&[
+                Box::new(BINDING_SUCCESS),
+                Box::new(XorMappedAddress {
+                    ip: "127.0.0.1".parse().unwrap(),
+                    port: 8888, // Different port
+                }),
+            ])
+            .unwrap();
+
+            mock_server.send_to(&resp.raw, client_addr).await.unwrap();
+        });
+
+        // 2. Setup Client
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        // 3. Define "Previous Address" (Result from STUN 1)
+        // We pretend STUN 1 said we are on port 9999.
+        let prev_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        // 4. Run Detection
+        // Since STUN 2 returns port 8888, and 8888 != 9999, it should be Symmetric.
+        let nat_type = get_nat_type(&socket, server_addr.to_string(), prev_addr).await;
+
+        assert_eq!(nat_type, NatType::Symmetric);
+    }
+
+    /// Simulates a scenario where the second STUN server sees the SAME port as the first one.
+    /// This indicates the router reuses the mapping (Cone).
+    #[tokio::test]
+    async fn test_get_nat_type_cone() {
+        let mock_server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = mock_server.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            let (len, client_addr) = mock_server.recv_from(&mut buf).await.unwrap();
+
+            let mut req = Message::new();
+            req.unmarshal_binary(&buf[..len]).unwrap();
+
+            // Reply with the SAME port as prev_addr
+            let mut resp = Message::new();
+            resp.transaction_id = req.transaction_id;
+            resp.build(&[
+                Box::new(BINDING_SUCCESS),
+                Box::new(XorMappedAddress {
+                    ip: "127.0.0.1".parse().unwrap(),
+                    port: 9999, // Same port
+                }),
+            ])
+            .unwrap();
+
+            mock_server.send_to(&resp.raw, client_addr).await.unwrap();
+        });
+
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let prev_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        let nat_type = get_nat_type(&socket, server_addr.to_string(), prev_addr).await;
+
+        assert_eq!(nat_type, NatType::Cone);
+    }
+
+    /// If the second STUN query fails (timeout/DNS), it should default to `Unknown` rather than crashing.
+    #[tokio::test]
+    async fn test_get_nat_type_unknown_on_failure() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let prev_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+
+        // Point to a non-existent server to force a timeout/error
+        let nat_type = get_nat_type(&socket, "127.0.0.1:0", prev_addr).await;
+
+        assert_eq!(nat_type, NatType::Unknown);
     }
 }

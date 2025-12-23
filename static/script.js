@@ -69,8 +69,8 @@ async function fetchInitialStatus() {
     try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        // The /api/status endpoint might return simple status string or object
-        // Assuming it aligns with the basic states: disconnected, punching, connected
+        // The /api/status endpoint returns AppState
+        // { public_ip: "...", status: "...", peer_ip: "..." }
         if(data && data.status) {
             handleStatusChange(data.status, data);
         }
@@ -80,12 +80,12 @@ async function fetchInitialStatus() {
 }
 
 async function fetchPeerInfo() {
+    // Fallback: If we don't have peer info from events, try to fetch it explicitly
     try {
         const res = await fetch('/api/peer');
         if(res.ok) {
             const data = await res.json();
-            // Assuming /api/peer returns { ip: "...", port: ... } or string
-            // Adjust based on actual API response, here handling generic object
+            // Expecting { ip: "1.2.3.4", port: 1234 } or string
             if (data.ip && data.port) {
                 state.peerAddress = `${data.ip}:${data.port}`;
             } else if (typeof data === 'string') {
@@ -93,14 +93,30 @@ async function fetchPeerInfo() {
             }
         }
     } catch(e) {
-        console.log("No peer info available");
+        console.log("No peer info available via API");
     }
 }
 
 function handleStatusChange(statusStr, data = {}) {
-    const normStatus = statusStr.toUpperCase();
+    // Backend enum variants might be "Disconnected", "Punching", etc.
+    // SSE event tag renames them to "DISCONNECTED", "PUNCHING", etc.
+    // We normalize to upper case for comparison.
+    const normStatus = (statusStr || 'DISCONNECTED').toUpperCase();
     
-    // If we transition FROM punching TO disconnected, check for saved message
+    // Handle Data Syncing based on Event Structure
+    // 1. If it's a DISCONNECTED event (AppEvent::Disconnected { state }), it has a nested `state` object.
+    if (normStatus === 'DISCONNECTED' && data.state) {
+        if (data.state.public_ip) state.fullAddress = data.state.public_ip;
+        if (data.state.peer_ip) state.peerAddress = data.state.peer_ip;
+        // We could also sync nat_type here if needed
+    }
+    // 2. If it's a standard AppState (from /api/status), fields are top-level.
+    else {
+        if (data.public_ip) state.fullAddress = data.public_ip;
+        if (data.peer_ip) state.peerAddress = data.peer_ip;
+    }
+
+    // Logic: Transitioning FROM Punching TO Disconnected
     if (state.connectionStatus === 'punching' && normStatus === 'DISCONNECTED') {
         if (state.lastSavedMessage) {
             showToast(state.lastSavedMessage);
@@ -121,18 +137,22 @@ function handleStatusChange(statusStr, data = {}) {
     if (normStatus === 'PUNCHING') {
         enterPunchingState(data);
     } else if (normStatus === 'CONNECTED') {
-        enterConnectedState();
+        enterConnectedState(data);
     } else {
         // DISCONNECTED
         els.viewHome.classList.add('active');
-        state.peerAddress = null; // Clear peer on disconnect
+        // We generally keep peerAddress in state until a new connection clears it,
+        // or if the backend explicitly sends null in the state.
+        if (data.state && data.state.peer_ip === null) {
+            state.peerAddress = null;
+        }
     }
 }
 
 async function enterPunchingState(data) {
     els.viewPunching.classList.add('active');
     
-    // Ensure we have peer info
+    // If peer info is missing, try to fetch it
     if (!state.peerAddress) {
         await fetchPeerInfo();
     }
@@ -140,7 +160,7 @@ async function enterPunchingState(data) {
     els.vizClientIp.innerText = state.fullAddress || "Unknown";
     els.vizPeerIp.innerText = state.peerAddress || "Target";
 
-    // Handle Timeout Display
+    // Handle Timeout Display (from AppEvent::Punching { timeout })
     if (data.timeout !== undefined && data.timeout !== null) {
         els.punchTimeout.innerText = `${data.timeout}s`;
         
@@ -150,17 +170,13 @@ async function enterPunchingState(data) {
         }
     }
 
-    // Handle Logs
-    // "append the logs line by line"
-    // If message is present in punching event, add it to logs
+    // Handle Logs (from AppEvent::Punching { message })
     if (data.message) {
-        // Only add if it's not the same as the last one (optional debounce)
-        // or simply append everything the server sends.
         addLog(data.message);
     }
 }
 
-async function enterConnectedState() {
+async function enterConnectedState(data) {
     els.viewConnected.classList.add('active');
     
     if (!state.peerAddress) {
@@ -169,6 +185,12 @@ async function enterConnectedState() {
 
     els.connLocalIp.innerText = state.fullAddress;
     els.connRemoteIp.innerText = state.peerAddress || "Connected Peer";
+
+    // AppEvent::Connected { message }
+    if (data.message) {
+        // Optionally log or toast the success message
+        console.log("Connected:", data.message);
+    }
 }
 
 // --- SSE (Real-time Events) ---
@@ -177,15 +199,18 @@ function connectSSE() {
         return; 
     }
 
-    // New API Endpoint
+    // Endpoint: /api/events
     state.sseSource = new EventSource('/api/events');
 
     state.sseSource.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            // data structure matches AppEvent enum from Rust
-            // { status: "PUNCHING", timeout: 10, message: "..." }
             
+            // Structure: 
+            // { status: "DISCONNECTED", state: { ... } }
+            // { status: "PUNCHING", timeout: 10, message: "..." }
+            // { status: "CONNECTED", message: "..." }
+
             if (data.status) {
                 handleStatusChange(data.status, data);
             }
@@ -195,9 +220,8 @@ function connectSSE() {
     };
 
     state.sseSource.onerror = (err) => {
-        // If connection dies, we might want to reconnect or show disconnected
-        // The browser auto-reconnects SSE usually.
         console.warn("SSE Connection issue", err);
+        // Browser will auto-retry
     };
 }
 
@@ -297,7 +321,7 @@ async function handleConnect(e) {
         });
         if (!res.ok) throw new Error();
         
-        // Logic handled by SSE events now, but we can clear logs here
+        // Logic handled by SSE events now
         els.punchLogs.innerHTML = '';
         state.lastSavedMessage = null;
 
@@ -312,7 +336,6 @@ async function handleConnect(e) {
 async function handleDisconnect() {
     try {
         await fetch('/api/disconnect', { method: 'POST' });
-        // The SSE will likely send DISCONNECTED, which will trigger UI update
     } catch(e) {
         console.error(e);
     }
