@@ -14,50 +14,56 @@ use tracing::{error, info};
 /// 2. Managing the active connection state (though currently it just sets up the connection).
 /// 3. Handling failures and resetting the application state if the connection drops or fails.
 #[derive(Debug)]
-pub struct MessageManager {}
+pub struct MessageManager {
+    client_socket: Arc<UdpSocket>,
+    state: SharedState,
+}
 
 impl MessageManager {
-    /// Creates a new `MessageManager` and attempts to establish a connection.
-    ///
-    /// This function blocks asynchronously until the handshake succeeds or fails.
+    /// Creates a new `MessageManager`.
     ///
     /// # Arguments
     ///
     /// * `client_socket` - The local UDP socket.
-    /// * `peer_addr` - The target peer's public address.
     /// * `state` - The shared application state.
+    pub fn new(client_socket: Arc<UdpSocket>, state: SharedState) -> Self {
+        Self {
+            client_socket,
+            state,
+        }
+    }
+
+    /// The `handshake` function handles the `Punching` -> `Connected` state transitions
+    /// and UI event broadcasting internally.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_addr` - The target peer's public address.
     /// * `timeout_secs` - Duration to wait for handshake before giving up.
     ///
     /// # Returns
     ///
-    /// * `Ok(MessageManager)` - If the handshake is successful.
+    /// * `Ok(())` - If the handshake is successful.
     /// * `Err` - If the handshake fails or times out. The state will be reset to `Disconnected`.
-    pub async fn new(
-        client_socket: Arc<UdpSocket>,
-        peer_addr: SocketAddr,
-        state: SharedState,
-        timeout_secs: u64,
-    ) -> Result<Self> {
+    pub async fn handshake(&mut self, peer_addr: SocketAddr, timeout_secs: u64) -> Result<()> {
         info!("Initializing MessageManager for peer {}", peer_addr);
 
-        // Attempt the handshake.
-        // The `handshake` function handles the `Punching` -> `Connected` state transitions
-        // and UI event broadcasting internally.
         match handshake::handshake(
-            client_socket.clone(),
+            self.client_socket.clone(),
             peer_addr,
-            state.clone(),
+            self.state.clone(),
             timeout_secs,
         )
         .await
         {
             Ok(_) => {
                 info!("Handshake successful. MessageManager active.");
+                Ok(())
             }
             Err(e) => {
                 error!("Handshake failed: {}", e);
 
-                state.write().await.set_status(
+                self.state.write().await.set_status(
                     Status::Disconnected,
                     Some(format!("Connection failed: {}", e)),
                     None,
@@ -65,7 +71,5 @@ impl MessageManager {
                 bail!(e);
             }
         }
-
-        Ok(Self {})
     }
 }
