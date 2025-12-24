@@ -153,10 +153,10 @@ pub enum NatType {
     Unknown,
     /// Cone NAT: The router uses a consistent external port for internal clients.
     /// This is **favorable** for P2P hole punching.
-    _Cone,
+    Cone,
     /// Symmetric NAT: The router assigns different external ports for different destinations.
     /// This is **unfavorable** and difficult for P2P hole punching.
-    _Symmetric,
+    Symmetric,
 }
 
 /// Represents a distinct event sent from the server to the Web UI.
