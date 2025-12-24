@@ -4,7 +4,10 @@ use super::{
 };
 use anyhow::{Result, bail};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::{io::AsyncWriteExt, net::UdpSocket};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UdpSocket,
+};
 use tokio_kcp::{KcpConfig, KcpNoDelayConfig, KcpStream};
 use tracing::{error, info};
 
@@ -126,6 +129,40 @@ impl MessageManager {
         }
     }
 
+    /// Sends a binary message over the established KCP stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `payload` - The bytes to send.
+    pub async fn send_message(&mut self, payload: &[u8]) -> Result<()> {
+        if let Some(stream) = &mut self.kcp_stream {
+            stream.write_all(payload).await?;
+            stream.flush().await?;
+            Ok(())
+        } else {
+            bail!("KCP stream not established");
+        }
+    }
+
+    /// Reads a message from the KCP stream into the provided buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `buf` - The buffer to write received data into.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(usize)` - The number of bytes read.
+    pub async fn receive_message(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if let Some(stream) = &mut self.kcp_stream {
+            // This will wait (await) until data is available.
+            let n = stream.read(buf).await?;
+            Ok(n)
+        } else {
+            bail!("KCP stream not established");
+        }
+    }
+
     /// Helper to clone the underlying UDP socket safely.
     ///
     /// `tokio-kcp` requires ownership of a `UdpSocket`, but we only have an `Arc<UdpSocket>`.
@@ -240,6 +277,21 @@ mod tests {
             result.unwrap_err().to_string(),
             "Handshake not established."
         );
+    }
+
+    #[tokio::test]
+    async fn test_send_fails_without_kcp() {
+        let mut manager = create_test_manager().await;
+        let result = manager.send_message(b"hello").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_fails_without_kcp() {
+        let mut manager = create_test_manager().await;
+        let mut buf = [0u8; 10];
+        let result = manager.receive_message(&mut buf).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
