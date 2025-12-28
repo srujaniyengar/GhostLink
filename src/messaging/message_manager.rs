@@ -95,6 +95,8 @@ impl MessageManager {
     /// - Update Interval: 10ms
     /// - Resend: 2 (fast retransmission)
     /// - No Congestion Control (NC): enabled
+    /// - Windows: 1024 packets (allows higher throughput)
+    /// - MTU: 1400 (safe default for UDP)
     ///
     /// # Errors
     ///
@@ -112,6 +114,8 @@ impl MessageManager {
                     resend: 2,
                     nc: true,
                 },
+                wnd_size: (1024, 1024),
+                mtu: 1400,
                 ..Default::default()
             };
 
@@ -155,12 +159,16 @@ impl MessageManager {
     /// * `Ok(usize)` - The number of bytes read.
     pub async fn receive_message(&mut self, buf: &mut [u8]) -> Result<usize> {
         if let Some(stream) = &mut self.kcp_stream {
-            // This will wait (await) until data is available.
             let n = stream.read(buf).await?;
             Ok(n)
         } else {
             bail!("KCP stream not established");
         }
+    }
+
+    /// Returns true if the KCP stream is currently active.
+    pub fn is_connected(&self) -> bool {
+        self.kcp_stream.is_some()
     }
 
     /// Helper to clone the underlying UDP socket safely.
@@ -181,14 +189,13 @@ impl MessageManager {
             let fd = self.client_socket.as_raw_fd();
 
             // Create a std::net::UdpSocket from the raw fd.
-            // SAFETY: We must ensure we don't drop this variable normally,
-            // otherwise it will close the fd that our Arc<UdpSocket> relies on.
+            // must not drop this variable normally, it will close the fd Arc<UdpSocket> relies on.
             let std_sock = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
 
             // try_clone() creates a new file descriptor (dup) that refers to the same socket.
             let new_std_sock = std_sock.try_clone();
 
-            // CRITICAL: Forget the original wrapper so the destructor doesn't fire and close the fd.
+            // Forget the original wrapper so the destructor doesn't fire and close the fd.
             std::mem::forget(std_sock);
 
             let new_std_sock = new_std_sock?;
@@ -219,7 +226,6 @@ impl MessageManager {
             info!("Initiating KCP stream shutdown...");
 
             // Attempt graceful shutdown. We log errors but don't fail the function
-            // because our goal is to clean up the local handle regardless of network state.
             if let Err(e) = stream.shutdown().await {
                 error!("Error during KCP shutdown: {}", e);
             } else {
@@ -264,6 +270,7 @@ mod tests {
         let manager = create_test_manager().await;
         assert!(manager.peer_addr.is_none());
         assert!(manager.kcp_stream.is_none());
+        assert!(!manager.is_connected());
     }
 
     #[tokio::test]
