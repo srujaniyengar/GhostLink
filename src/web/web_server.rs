@@ -54,6 +54,7 @@ pub fn router(shared_state: SharedState) -> Router {
         // API Routes
         .route("/api/state", get(get_state))
         .route("/api/connect", post(connect_peer))
+        .route("/api/disconnect", post(disconnect_peer))
         .route("/api/message", post(send_message))
         .route("/api/events", get(sse_handler))
         // Static File Serving (Fallback)
@@ -106,7 +107,7 @@ async fn connect_peer(
             ));
         }
 
-        // Set the peer IP using the mutator to ensure the UI gets an update event
+        // Set the peer IP
         guard.set_peer_ip(peer_addr, Some("Target set via API".into()), None);
     }
 
@@ -114,6 +115,32 @@ async fn connect_peer(
     let cmd_tx = state.read().await.cmd_tx().clone();
     if let Err(e) = cmd_tx.send(Command::ConnectPeer).await {
         error!("Failed to send ConnectPeer command: {}", e);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal Controller Error".to_string(),
+        ));
+    }
+
+    Ok(StatusCode::OK)
+}
+
+/// Handler for `POST /api/disconnect`.
+/// Triggers graceful disconnection from the current peer.
+async fn disconnect_peer(
+    State(state): State<SharedState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    debug!("Received disconnect request");
+
+    // Check if connected or punching
+    let status = state.read().await.status;
+    if status == Status::Disconnected {
+        return Err((StatusCode::BAD_REQUEST, "Already disconnected".to_string()));
+    }
+
+    // Send command to controller
+    let cmd_tx = state.read().await.cmd_tx().clone();
+    if let Err(e) = cmd_tx.send(Command::Disconnect).await {
+        error!("Failed to send Disconnect command: {}", e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Controller Error".to_string(),
@@ -378,7 +405,10 @@ mod tests {
         // Verify event was broadcast
         let event = event_rx.recv().await.unwrap();
         match event {
-            AppEvent::Disconnected { state: app_state } => {
+            AppEvent::Disconnected {
+                state: app_state,
+                message: Some(_),
+            } => {
                 assert_eq!(
                     app_state.public_ip.unwrap().to_string(),
                     "203.0.113.10:8080"
@@ -419,8 +449,12 @@ mod tests {
 
         // Verify event contains new IP
         let event = event_rx.recv().await.unwrap();
+        print!("{:?}", event);
         match event {
-            AppEvent::Disconnected { state: app_state } => {
+            AppEvent::Disconnected {
+                state: app_state,
+                message: Some(_),
+            } => {
                 assert_eq!(
                     app_state.public_ip.unwrap().to_string(),
                     "203.0.113.20:8080"
@@ -445,10 +479,70 @@ mod tests {
         // Verify event
         let event = event_rx.recv().await.unwrap();
         match event {
-            AppEvent::Disconnected { state: app_state } => {
+            AppEvent::Disconnected {
+                state: app_state,
+                message: Some(_),
+            } => {
                 assert_eq!(app_state.nat_type, NatType::Cone);
             }
             _ => panic!("Expected Disconnected event"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_when_disconnected_fails() {
+        let state = create_test_state();
+        let app = router(state.clone());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/disconnect")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_when_connected_succeeds() {
+        let state = create_test_state();
+
+        // Set state to connected
+        {
+            state.write().await.status = Status::Connected;
+        }
+
+        let app = router(state.clone());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/disconnect")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_when_punching_succeeds() {
+        let state = create_test_state();
+
+        // Set state to punching
+        {
+            state.write().await.status = Status::Punching;
+        }
+
+        let app = router(state.clone());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/disconnect")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

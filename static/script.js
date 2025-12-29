@@ -8,7 +8,6 @@ const state = {
     isIpValid: false,
     isPortValid: false,
     sseSource: null,
-    lastSavedMessage: null, // For storing the message on timeout
 };
 
 // --- DOM Elements ---
@@ -42,6 +41,7 @@ const els = {
     vizPeerIp: document.getElementById('vizPeerIp'),
     punchLogs: document.getElementById('punchLogs'),
     punchTimeout: document.getElementById('punchTimeout'),
+    cancelPunchBtn: document.getElementById('cancelPunchBtn'), // New Cancel Button
 
     // Connected / Chat
     chatMessages: document.getElementById('chatMessages'),
@@ -49,6 +49,7 @@ const els = {
     chatForm: document.getElementById('chatForm'),
     chatInput: document.getElementById('chatInput'),
     sendBtn: document.getElementById('sendBtn'),
+    disconnectBtn: document.getElementById('disconnectBtn'), // New Disconnect Button
 
     // Toast
     toast: document.getElementById('toast'),
@@ -151,11 +152,11 @@ function handleStatusChange(statusStr, data = {}) {
     // CASE B: Standard AppState via REST API (/api/state) or top-level event fields
     // (Note: syncState calls handleStatusChange, so we avoid infinite recursion by not calling syncState back)
     
-    // Logic: Transitioning FROM Punching TO Disconnected
-    if (state.connectionStatus === 'punching' && normStatus === 'DISCONNECTED') {
-        if (state.lastSavedMessage) {
-            showToast(state.lastSavedMessage);
-            state.lastSavedMessage = null;
+    // Logic: Handling Disconnection Messages
+    // Simplified: Directly display message if present in the event payload
+    if (normStatus === 'DISCONNECTED') {
+        if (data.message) {
+            showToast(data.message);
         }
     }
 
@@ -169,6 +170,9 @@ function handleStatusChange(statusStr, data = {}) {
     els.viewPunching.classList.remove('active');
     els.viewConnected.classList.remove('active');
 
+    // Reset buttons when state changes
+    resetDisconnectButtons();
+
     if (normStatus === 'PUNCHING') {
         enterPunchingState(data);
     } else if (normStatus === 'CONNECTED') {
@@ -176,6 +180,16 @@ function handleStatusChange(statusStr, data = {}) {
     } else {
         // DISCONNECTED
         els.viewHome.classList.add('active');
+        els.submitBtn.disabled = !(state.isIpValid && state.isPortValid);
+        els.submitBtn.innerText = "Establish Link";
+    }
+}
+
+function resetDisconnectButtons() {
+    if(els.disconnectBtn) els.disconnectBtn.disabled = false;
+    if(els.cancelPunchBtn) {
+        els.cancelPunchBtn.disabled = false;
+        els.cancelPunchBtn.innerText = "Cancel Connection";
     }
 }
 
@@ -192,10 +206,6 @@ async function enterPunchingState(data) {
     // Handle Timeout Display (from AppEvent::Punching { timeout })
     if (data.timeout !== undefined && data.timeout !== null) {
         els.punchTimeout.innerText = `${data.timeout}s`;
-        
-        if (data.timeout === 0 && data.message) {
-            state.lastSavedMessage = data.message;
-        }
     }
 
     // Handle Logs (from AppEvent::Punching { message })
@@ -233,11 +243,15 @@ function connectSSE() {
             // { status: "PUNCHING", timeout: 10, message: "..." }
             // { status: "CONNECTED", message: "..." }
             // { status: "MESSAGE", content: "...", from_me: true/false }
+            // { status: "CLEAR_CHAT" }
 
             if (data.status) {
                 if (data.status === 'MESSAGE') {
                     // Handle chat message
                     addChatMessage(data.content, data.from_me);
+                } else if (data.status === 'CLEAR_CHAT') {
+                    // Handle clear chat event
+                    clearChatUI();
                 } else {
                     handleStatusChange(data.status, data);
                 }
@@ -327,6 +341,19 @@ function addLog(message) {
 }
 
 // --- Chat Functions ---
+
+function clearChatUI() {
+    // Reset chat container to initial state with welcome message
+    els.chatMessages.innerHTML = `
+        <div class="chat-welcome">
+            <div class="welcome-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            </div>
+            <h3>Connection Established</h3>
+            <p>You can now send and receive messages securely via P2P</p>
+        </div>
+    `;
+}
 
 /**
  * Adds a chat message to the chat UI
@@ -423,13 +450,45 @@ async function handleConnect(e) {
         if (!res.ok) throw new Error();
         
         els.punchLogs.innerHTML = '';
-        state.lastSavedMessage = null;
+        // No longer using lastSavedMessage
 
     } catch (err) {
         showToast("Connection failed to start");
-    } finally {
         btn.innerText = "Establish Link";
         btn.disabled = false;
+    } 
+}
+
+// --- Disconnect Logic ---
+
+async function handleDisconnect(e) {
+    if(e) e.preventDefault();
+    
+    // Provide immediate UI feedback to prevent double-clicks
+    if(els.disconnectBtn) els.disconnectBtn.disabled = true;
+    if(els.cancelPunchBtn) {
+        els.cancelPunchBtn.disabled = true;
+        els.cancelPunchBtn.innerText = "Canceling...";
+    }
+
+    try {
+        const res = await fetch('/api/disconnect', { method: 'POST' });
+        if (!res.ok) throw new Error("Disconnect failed");
+        
+        // Success: We do nothing here. The backend will process the request,
+        // send a command, update state, and the SSE stream will push 
+        // a "DISCONNECTED" event, which triggers `handleStatusChange` to switch the UI.
+        
+    } catch (err) {
+        console.error('Disconnect failed:', err);
+        showToast("Failed to disconnect");
+        
+        // Re-enable buttons on failure so user can try again
+        if(els.disconnectBtn) els.disconnectBtn.disabled = false;
+        if(els.cancelPunchBtn) {
+            els.cancelPunchBtn.disabled = false;
+            els.cancelPunchBtn.innerText = "Cancel Connection";
+        }
     }
 }
 
@@ -554,11 +613,20 @@ function handlePortValidation() {
 function setupEventListeners() {
     if(els.copyBtn) els.copyBtn.addEventListener('click', copyToClipboard);
     if(els.copyLocalBtn) els.copyLocalBtn.addEventListener('click', copyLocalToClipboard);
-    els.connectForm.addEventListener('submit', handleConnect);
-    els.peerIpInput.addEventListener('input', () => handleIpValidation('input'));
-    els.peerIpInput.addEventListener('blur', () => handleIpValidation('blur'));
-    els.peerPortInput.addEventListener('input', handlePortValidation);
+    
+    if(els.connectForm) els.connectForm.addEventListener('submit', handleConnect);
+    
+    if(els.peerIpInput) {
+        els.peerIpInput.addEventListener('input', () => handleIpValidation('input'));
+        els.peerIpInput.addEventListener('blur', () => handleIpValidation('blur'));
+    }
+    if(els.peerPortInput) els.peerPortInput.addEventListener('input', handlePortValidation);
+    
     if(els.chatForm) els.chatForm.addEventListener('submit', handleChatSubmit);
+    
+    // New Disconnect Listeners
+    if(els.disconnectBtn) els.disconnectBtn.addEventListener('click', handleDisconnect);
+    if(els.cancelPunchBtn) els.cancelPunchBtn.addEventListener('click', handleDisconnect);
 }
 
 init();

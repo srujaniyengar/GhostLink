@@ -5,7 +5,7 @@ mod web;
 
 use crate::{
     config::Config,
-    messaging::message_manager::MessageManager,
+    messaging::message_manager::{MessageManager, StreamMessage},
     web::{
         shared_state::{AppEvent, AppState, Command, SharedState, Status},
         web_server,
@@ -44,8 +44,7 @@ async fn main() -> Result<()> {
     let (event_tx, _event_rx) = broadcast::channel::<AppEvent>(32);
 
     // Initialize Shared State
-    // Note: We use the new constructor which automatically defaults internal fields.
-    let shared_state = Arc::new(RwLock::new(AppState::new(cmd_tx, event_tx)));
+    let shared_state = Arc::new(RwLock::new(AppState::new(cmd_tx.clone(), event_tx)));
 
     // Spawn Web Server
     let state_clone = Arc::clone(&shared_state);
@@ -56,13 +55,33 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start the Controller (Main Logic)
-    // We await this as it runs the main event loop
+    // Spawn signal handler for graceful shutdown
+    let cmd_tx_clone = cmd_tx.clone();
+    let disconnect_timeout = config.disconnect_timeout_ms;
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received Ctrl+C signal, initiating graceful shutdown");
+                // Send disconnect command
+                if let Err(e) = cmd_tx_clone.send(Command::Disconnect).await {
+                    warn!("Failed to send disconnect command on shutdown: {}", e);
+                }
+                // Time for disconnect to complete
+                tokio::time::sleep(Duration::from_millis(disconnect_timeout)).await;
+                std::process::exit(0);
+            }
+            Err(e) => {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
+    });
+
+    // Start the main controller
     if let Err(e) = start_controller(&config, &shared_state, cmd_rx).await {
         error!("Controller error: {:?}", e);
     }
 
-    // Wait for web server (optional, usually controller keeps app alive)
+    // Wait for web server
     let _ = web_server_handle.await;
 
     Ok(())
@@ -82,7 +101,6 @@ async fn start_controller(
     mut cmd_rx: mpsc::Receiver<Command>,
 ) -> Result<()> {
     // 1. Bind the UDP Socket
-    // We bind to 0.0.0.0 to listen on all interfaces.
     let socket = UdpSocket::bind(("0.0.0.0", config.client_port)).await?;
     let socket = Arc::new(socket);
 
@@ -105,13 +123,11 @@ async fn start_controller(
     }
 
     // 3. Resolve Public IP via STUN
-    // Note: We pass a reference to the socket. net::resolve_public_ip now expects &UdpSocket.
     match net::resolve_public_ip(&socket, &config.stun_server).await {
         Ok(public_addr) => {
             info!("Public IP resolved via STUN: {}", public_addr);
 
-            // Update state safely using the setter.
-            // This triggers an event update so the UI displays the IP immediately.
+            // Update state
             shared_state.write().await.set_public_ip(
                 public_addr,
                 Some("Public IP resolved".into()),
@@ -174,7 +190,7 @@ async fn start_controller(
 
                             Command::SendMessage(msg) => {
                                 if message_manager.is_connected() {
-                                    match message_manager.send_message(msg.as_bytes()).await {
+                                    match message_manager.send_text(msg.clone()).await {
                                         Ok(_) => {
                                             shared_state.read().await.add_message(msg, true);
                                         },
@@ -184,23 +200,40 @@ async fn start_controller(
                                     warn!("Cannot send message: not connected to peer");
                                 }
                             }
+
+                            Command::Disconnect => {
+                                debug!("Disconnect command received");
+                                if let Err(e) = message_manager.disconnect().await {
+                                    error!("Disconnect failed: {:?}", e);
+                                } else {
+                                    info!("Successfully disconnected from peer");
+                                }
+                            }
                         }
                     }
                     None => {
-                        info!("Command channel closed, shutting down");
+                        debug!("Command channel closed, shutting down");
                         break;
                     }
                 }
             }
 
-
             // B. Handle Incoming KCP Messages (Only if connected)
             res = message_manager.receive_message(&mut recv_buf), if message_manager.is_connected() => {
                 match res {
                     Ok(n) => {
-                        let msg_str = String::from_utf8_lossy(&recv_buf[..n]).to_string();
-                        debug!("Received message from peer: {}", msg_str);
-                        shared_state.read().await.add_message(msg_str, false);
+                        match bincode::deserialize::<StreamMessage>(&recv_buf[..n]) {
+                            Ok(StreamMessage::Bye) => {
+                                info!("Received BYE from peer. Disconnecting.");
+                                let _ = message_manager.disconnect_on_bye_received().await;
+                            }
+                            Ok(StreamMessage::Text(content)) => {
+                                shared_state.read().await.add_message(content, false);
+                            }
+                            Err(e) => {
+                                warn!("Failed to deserialize KCP packet: {}", e);
+                            }
+                        }
                     },
                     Err(e) => {
                         error!("KCP stream error: {}", e);
@@ -210,8 +243,7 @@ async fn start_controller(
 
             // C. Handle Keep-Alive (Heartbeat)
             _ = keep_alive_interval.tick() => {
-                // Only need to keep the NAT open if we are NOT connected.
-                // If we are connected, the MessageManager (chat session) handles traffic.
+                // Keep the NAT open if not connected.
                 let status = shared_state.read().await.status;
 
                 if status == Status::Disconnected {
