@@ -1,15 +1,16 @@
 use super::{
     super::web::shared_state::{SharedState, Status},
-    handshake,
+    handshake::{self, HandshakeMsg},
 };
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UdpSocket,
 };
 use tokio_kcp::{KcpConfig, KcpNoDelayConfig, KcpStream};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Manages the lifecycle of a P2P connection, handling the transition from raw UDP to reliable KCP.
 ///
@@ -27,6 +28,15 @@ pub struct MessageManager {
     peer_addr: Option<SocketAddr>,
     /// The active reliable stream. None until `upgrade_to_kcp` is called.
     kcp_stream: Option<KcpStream>,
+}
+
+/// Represents a message being sent/received to/from a peer.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum StreamMessage {
+    /// Regular chat content
+    Text(String),
+    /// Signal to close connection
+    Bye,
 }
 
 impl MessageManager {
@@ -106,7 +116,7 @@ impl MessageManager {
         if let Some(peer_addr) = self.peer_addr {
             info!("Upgrading connection to KCP with {}", peer_addr);
 
-            // Configure KCP for low-latency (Turbo Mode)
+            // Configure KCP for low-latency
             let config = KcpConfig {
                 nodelay: KcpNoDelayConfig {
                     nodelay: true,
@@ -133,12 +143,22 @@ impl MessageManager {
         }
     }
 
+    /// Sends a text message wrapped in the StreamMessage protocol
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - Message to send.
+    pub async fn send_text(&mut self, text: String) -> Result<()> {
+        let payload = bincode::serialize(&StreamMessage::Text(text))?;
+        self.send_raw(&payload).await
+    }
+
     /// Sends a binary message over the established KCP stream.
     ///
     /// # Arguments
     ///
     /// * `payload` - The bytes to send.
-    pub async fn send_message(&mut self, payload: &[u8]) -> Result<()> {
+    async fn send_raw(&mut self, payload: &[u8]) -> Result<()> {
         if let Some(stream) = &mut self.kcp_stream {
             stream.write_all(payload).await?;
             stream.flush().await?;
@@ -212,6 +232,92 @@ impl MessageManager {
         }
     }
 
+    /// Gracefully disconnects from the peer by sending a Bye message and cleaning up resources.
+    ///
+    /// This method:
+    /// 1. Sends a Bye message to the peer (over KCP if connected, UDP as fallback)
+    /// 2. Closes the KCP stream if active
+    /// 3. Resets the connection state
+    /// 4. Updates shared state to Disconnected
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Disconnection successful
+    /// * `Err` - If sending the Bye message fails (cleanup still proceeds)
+    pub async fn disconnect(&mut self) -> Result<()> {
+        self.disconnect_internal(true).await
+    }
+
+    /// Disconnects from peer without sending Bye (used when receiving Bye from peer).
+    ///
+    /// This method performs cleanup without notifying the peer, since they already
+    /// initiated the disconnect.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Disconnection successful
+    pub async fn disconnect_on_bye_received(&mut self) -> Result<()> {
+        self.disconnect_internal(false).await
+    }
+
+    /// Internal disconnect implementation with option to send Bye message.
+    ///
+    /// # Arguments
+    ///
+    /// * `send_bye` - If true, sends Bye message to peer before cleanup
+    async fn disconnect_internal(&mut self, send_bye: bool) -> Result<()> {
+        info!("Initiating graceful disconnect (send_bye: {})", send_bye);
+
+        // Send Bye message to peer only if requested
+        if send_bye && let Some(peer_addr) = self.peer_addr {
+            let mut sent_via_kcp = false;
+
+            // Try to send via KCP first if available
+            if self.kcp_stream.is_some() {
+                let bye_packet = bincode::serialize(&StreamMessage::Bye)?;
+                match self.send_raw(&bye_packet).await {
+                    Ok(_) => {
+                        info!("Sent Bye message to peer via KCP");
+                        sent_via_kcp = true;
+                    }
+                    Err(e) => {
+                        warn!("Failed to send Bye via KCP: {}. Will try UDP fallback.", e);
+                    }
+                }
+            }
+
+            // 2. Fallback: UDP Raw (HandshakeMsg::Bye)
+            if !sent_via_kcp {
+                let udp_bye = bincode::serialize(&HandshakeMsg::Bye)?;
+                match self.client_socket.send_to(&udp_bye, peer_addr).await {
+                    Ok(_) => info!("Sent HandshakeMsg::Bye via UDP"),
+                    Err(e) => warn!("Failed to send Bye via UDP: {}", e),
+                }
+            }
+        }
+
+        // Close KCP stream if active
+        if let Err(e) = self.close_kcp().await {
+            warn!("Error closing KCP stream during disconnect: {}", e);
+        }
+
+        // Reset connection state
+        self.peer_addr = None;
+
+        // Clear chat history
+        self.state.read().await.clear_chat();
+
+        // Update shared state
+        self.state.write().await.set_status(
+            Status::Disconnected,
+            Some("Disconnected from peer".into()),
+            None,
+        );
+
+        info!("Disconnect complete");
+        Ok(())
+    }
+
     /// Closes the active KCP stream gracefully.
     ///
     /// This method:
@@ -225,7 +331,7 @@ impl MessageManager {
         if let Some(mut stream) = self.kcp_stream.take() {
             info!("Initiating KCP stream shutdown...");
 
-            // Attempt graceful shutdown. We log errors but don't fail the function
+            // Attempt graceful shutdown. Log errors but not fail the function
             if let Err(e) = stream.shutdown().await {
                 error!("Error during KCP shutdown: {}", e);
             } else {
@@ -289,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_fails_without_kcp() {
         let mut manager = create_test_manager().await;
-        let result = manager.send_message(b"hello").await;
+        let result = manager.send_text("hello".into()).await;
         assert!(result.is_err());
     }
 
@@ -345,5 +451,37 @@ mod tests {
             send_result.is_ok(),
             "Original socket should remain valid after cloned socket is dropped"
         );
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_without_connection() {
+        let mut manager = create_test_manager().await;
+
+        // Disconnect without being connected should work (idempotent)
+        let result = manager.disconnect().await;
+        assert!(result.is_ok());
+
+        // Verify state was updated to Disconnected
+        let state_guard = manager.state.read().await;
+        assert_eq!(state_guard.status, Status::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_with_peer_addr() {
+        let mut manager = create_test_manager().await;
+
+        // Set a peer address (simulating a connection)
+        manager.peer_addr = Some("127.0.0.1:9999".parse().unwrap());
+
+        // Disconnect
+        let result = manager.disconnect().await;
+        assert!(result.is_ok());
+
+        // Verify peer_addr is cleared
+        assert!(manager.peer_addr.is_none());
+
+        // Verify state was updated to Disconnected
+        let state_guard = manager.state.read().await;
+        assert_eq!(state_guard.status, Status::Disconnected);
     }
 }

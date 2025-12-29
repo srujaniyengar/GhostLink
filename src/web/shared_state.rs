@@ -127,13 +127,14 @@ impl AppState {
     /// via the event channel.
     fn broadcast_status_change(&self, message: Option<String>, timeout: Option<u64>) {
         let event = match self.status {
-            // When disconnected, we send the full state so the UI can sync up.
+            // When disconnected, sends the full state.
             Status::Disconnected => AppEvent::Disconnected {
                 state: self.clone(),
+                message,
             },
-            // During punching, we primarily send progress updates/timeouts.
+            // During punching, sends progress updates and timeouts.
             Status::Punching => AppEvent::Punching { timeout, message },
-            // When connected, we send status messages.
+            // When connected, sends status messages.
             Status::Connected => AppEvent::Connected { message },
         };
         self.broadcast_event(event);
@@ -142,6 +143,11 @@ impl AppState {
     /// Broadcasts a chat message to the UI.
     pub fn add_message(&self, content: String, from_me: bool) {
         let _ = self.event_tx.send(AppEvent::Message { content, from_me });
+    }
+
+    /// Clears the chat history in the UI.
+    pub fn clear_chat(&self) {
+        let _ = self.event_tx.send(AppEvent::ClearChat);
     }
 
     /// Broadcasts an event to the UI.
@@ -172,9 +178,11 @@ pub enum NatType {
 pub enum AppEvent {
     /// Application is idle or disconnected.
     ///
-    /// Includes full state for UI synchronization.
     Disconnected {
+        /// Full state for UI synchronization.
         state: AppState,
+        /// Messages.
+        message: Option<String>,
     },
 
     /// Attempting NAT hole punching.
@@ -195,6 +203,9 @@ pub enum AppEvent {
         content: String,
         from_me: bool,
     },
+
+    /// Clear chat history.
+    ClearChat,
 }
 
 /// Connection state of the P2P node.
@@ -219,4 +230,7 @@ pub enum Command {
 
     /// Sends a message
     SendMessage(String),
+
+    /// Disconnect from current peer
+    Disconnect,
 }

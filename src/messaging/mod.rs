@@ -1,2 +1,2 @@
-mod handshake;
+pub mod handshake;
 pub mod message_manager;

@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 /// Represents handshake message being sent or received.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-enum HandshakeMsg {
+pub enum HandshakeMsg {
     Syn,
     SynAck,
     Bye,
@@ -116,12 +116,12 @@ pub async fn handshake(
 
                         }
                         HandshakeMsg::SynAck => {
-                            info!("Received SYN-ACK from {}. Sending ACK.", sender);
+                            info!("Received SYN-ACK from {}.", sender);
 
                             // Transition to Connected state
                             state.write().await.set_status(
                                 Status::Punching,
-                                Some(format!("Received SYN-ACK from {}. Sending ACK.", sender)),
+                                Some(format!("Received SYN-ACK from {}.", sender)),
                                 Some(secs_left),
                             );
 

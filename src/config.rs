@@ -6,6 +6,7 @@ pub struct Config {
     pub web_port: u16,
     pub handshake_timeout_secs: u64,
     pub punch_hole_secs: u64,
+    pub disconnect_timeout_ms: u64,
 }
 
 impl Config {
@@ -17,6 +18,7 @@ impl Config {
             web_port: 8080,
             handshake_timeout_secs: 30,
             punch_hole_secs: 15,
+            disconnect_timeout_ms: 500,
         }
     }
 }

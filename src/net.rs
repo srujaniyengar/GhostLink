@@ -29,7 +29,7 @@ const STUN_TIMEOUT: Duration = Duration::from_secs(3);
 /// * `Ok(SocketAddr)` - Local IP and port
 /// * `Err` - If resolution fails
 pub async fn get_local_ip(local_port: u16) -> Result<SocketAddr> {
-    // Connect to Google's public DNS (we don't send any data)
+    // Connect to Google's public DNS
     let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
     socket.connect("8.8.8.8:80").await?;
     let local_addr = socket.local_addr()?;
@@ -93,7 +93,7 @@ pub async fn resolve_public_ip(
     // 3. Wait for response with timeout
     let mut buf = [0u8; 1024];
 
-    // We use a timeout here because UDP packets can be lost, and we don't want to hang forever.
+    // Use timeout as UDP packets can be lost.
     let (len, sender_addr) = timeout(STUN_TIMEOUT, socket.recv_from(&mut buf))
         .await
         .context("STUN request timed out")?
@@ -227,7 +227,7 @@ mod test {
         let mock_server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let server_addr = mock_server.local_addr().unwrap();
 
-        // We expect a timeout error roughly after STUN_TIMEOUT
+        // Expect a timeout error roughly after STUN_TIMEOUT
         let result = resolve_public_ip(&socket, server_addr.to_string()).await;
 
         assert!(result.is_err());
@@ -307,7 +307,7 @@ mod test {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
         // 3. Define "Previous Address" (Result from STUN 1)
-        // We pretend STUN 1 said we are on port 9999.
+        // Pretend STUN 1 said we are on port 9999.
         let prev_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
 
         // 4. Run Detection
