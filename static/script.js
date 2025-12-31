@@ -181,7 +181,7 @@ function handleStatusChange(statusStr, data = {}) {
         // DISCONNECTED
         els.viewHome.classList.add('active');
         els.submitBtn.disabled = !(state.isIpValid && state.isPortValid);
-        els.submitBtn.innerText = "Establish Link";
+        els.submitBtn.innerText = "INITIATE LINK SEQUENCE";
     }
 }
 
@@ -189,7 +189,7 @@ function resetDisconnectButtons() {
     if(els.disconnectBtn) els.disconnectBtn.disabled = false;
     if(els.cancelPunchBtn) {
         els.cancelPunchBtn.disabled = false;
-        els.cancelPunchBtn.innerText = "Cancel Connection";
+        els.cancelPunchBtn.innerText = "ABORT SEQUENCE";
     }
 }
 
@@ -287,7 +287,7 @@ function renderNatType() {
 
 function renderStatusBadge() {
     const s = state.connectionStatus;
-    els.statusText.innerText = s.charAt(0).toUpperCase() + s.slice(1);
+    els.statusText.innerText = s.toUpperCase();
     
     let color, bg, border;
     if (s === 'connected') {
@@ -312,9 +312,9 @@ function renderMyInfo(success) {
         els.apiErrorMsg.style.display = 'none';
         els.copyBtn.style.display = 'flex';
     } else {
-        els.myIpDisplay.innerText = "Connection Failed";
+        els.myIpDisplay.innerText = "CONN_FAIL";
         els.myIpDisplay.classList.add('error');
-        els.apiErrorMsg.innerText = "Could not reach node.";
+        els.apiErrorMsg.innerText = "COULD NOT REACH NODE";
         els.apiErrorMsg.style.display = 'block';
         els.copyBtn.style.display = 'none';
     }
@@ -325,7 +325,7 @@ function renderMyInfo(success) {
         els.myLocalIpDisplay.classList.remove('error');
         els.copyLocalBtn.style.display = 'flex';
     } else {
-        els.myLocalIpDisplay.innerText = "Not Available";
+        els.myLocalIpDisplay.innerText = "N/A";
         els.myLocalIpDisplay.classList.add('error');
         els.copyLocalBtn.style.display = 'none';
     }
@@ -335,7 +335,7 @@ function addLog(message) {
     const row = document.createElement('div');
     row.className = `log-line system`; 
     const timeStr = new Date().toLocaleTimeString('en-US', {hour12: false, hour:"2-digit", minute:"2-digit", second:"2-digit"});
-    row.innerHTML = `<span class="log-timestamp">[${timeStr}]</span> ${message}`;
+    row.innerHTML = `<span class="log-timestamp">[${timeStr}]</span> ${message.toUpperCase()}`;
     els.punchLogs.appendChild(row);
     els.punchLogs.scrollTop = els.punchLogs.scrollHeight;
 }
@@ -349,8 +349,8 @@ function clearChatUI() {
             <div class="welcome-icon">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
             </div>
-            <h3>Connection Established</h3>
-            <p>You can now send and receive messages securely via P2P</p>
+            <h3>CONNECTION ESTABLISHED</h3>
+            <p>SECURE CHANNEL OPEN. BEGIN TRANSMISSION.</p>
         </div>
     `;
 }
@@ -380,7 +380,7 @@ function addChatMessage(content, fromMe) {
     const timeDiv = document.createElement('span');
     timeDiv.className = 'message-time';
     const now = new Date();
-    timeDiv.textContent = now.toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit', hour12: true});
+    timeDiv.textContent = now.toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit', hour12: false});
     
     bubbleDiv.appendChild(contentDiv);
     bubbleDiv.appendChild(timeDiv);
@@ -421,7 +421,7 @@ async function handleChatSubmit(e) {
         
     } catch (err) {
         console.error('Failed to send message:', err);
-        showToast('Failed to send message');
+        showToast('TRANSMISSION FAILED');
     } finally {
         els.sendBtn.disabled = false;
     }
@@ -438,7 +438,7 @@ async function handleConnect(e) {
     state.peerAddress = `${ip}:${port}`;
 
     const btn = els.submitBtn;
-    btn.innerText = "Initiating...";
+    btn.innerText = "INITIATING...";
     btn.disabled = true;
 
     try {
@@ -453,8 +453,8 @@ async function handleConnect(e) {
         // No longer using lastSavedMessage
 
     } catch (err) {
-        showToast("Connection failed to start");
-        btn.innerText = "Establish Link";
+        showToast("CONNECTION FAILED TO START");
+        btn.innerText = "INITIATE LINK SEQUENCE";
         btn.disabled = false;
     } 
 }
@@ -468,7 +468,7 @@ async function handleDisconnect(e) {
     if(els.disconnectBtn) els.disconnectBtn.disabled = true;
     if(els.cancelPunchBtn) {
         els.cancelPunchBtn.disabled = true;
-        els.cancelPunchBtn.innerText = "Canceling...";
+        els.cancelPunchBtn.innerText = "ABORTING...";
     }
 
     try {
@@ -481,13 +481,13 @@ async function handleDisconnect(e) {
         
     } catch (err) {
         console.error('Disconnect failed:', err);
-        showToast("Failed to disconnect");
+        showToast("FAILED TO DISCONNECT");
         
         // Re-enable buttons on failure so user can try again
         if(els.disconnectBtn) els.disconnectBtn.disabled = false;
         if(els.cancelPunchBtn) {
             els.cancelPunchBtn.disabled = false;
-            els.cancelPunchBtn.innerText = "Cancel Connection";
+            els.cancelPunchBtn.innerText = "ABORT SEQUENCE";
         }
     }
 }
@@ -498,7 +498,7 @@ function toggleSubmitButton() {
 }
 
 function showToast(message) {
-    els.toastMsg.textContent = message;
+    els.toastMsg.textContent = message.toUpperCase();
     els.toast.classList.add('show');
     setTimeout(() => els.toast.classList.remove('show'), 3000);
 }
@@ -511,7 +511,7 @@ function copyToClipboard() {
         textarea.select();
         try {
             document.execCommand('copy');
-            showToast("Public IP copied to clipboard");
+            showToast("PUBLIC IP COPIED");
         } catch (err) {
             console.error('Copy failed', err);
         }
@@ -527,7 +527,7 @@ function copyLocalToClipboard() {
         textarea.select();
         try {
             document.execCommand('copy');
-            showToast("Local IP copied to clipboard");
+            showToast("LOCAL IP COPIED");
         } catch (err) {
             console.error('Copy failed', err);
         }
