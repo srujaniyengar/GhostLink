@@ -68,15 +68,31 @@ pub async fn resolve_public_ip(
     let stun_server = stun_server.as_ref();
     debug!("Querying STUN server: {}", stun_server);
 
-    // 1. Resolve DNS for the STUN server.
+    // 1. Determine our socket type (IPv4 or IPv6)
+    let local_addr = socket
+        .local_addr()
+        .context("Could not get local socket address")?;
+    let is_ipv4_socket = local_addr.is_ipv4();
+
+    // 2. Resolve DNS for the STUN server.
     let mut addrs = tokio::net::lookup_host(stun_server)
         .await
         .context(format!("Failed to resolve DNS for {}", stun_server))?;
 
-    // Use the first resolved IP address
+    // 3. INTELLIGENT FILTERING (Fixed Clippy Lint):
+    // Use .find() instead of .filter().next()
     let target_addr = addrs
-        .next()
-        .context("STUN server domain name did not resolve to any IP address")?;
+        .find(|addr| {
+            if is_ipv4_socket {
+                addr.is_ipv4()
+            } else {
+                addr.is_ipv6()
+            }
+        })
+        .context(format!(
+            "STUN server {} has no addresses compatible with your socket (Protocol Mismatch)",
+            stun_server
+        ))?;
 
     // Build the STUN binding request
     let mut msg = Message::new();
@@ -84,13 +100,13 @@ pub async fn resolve_public_ip(
 
     let expected_tx_id = msg.transaction_id;
 
-    // 2. Send the request
+    // 4. Send the request
     socket
         .send_to(&msg.raw, target_addr)
         .await
         .context("Failed to send STUN request")?;
 
-    // 3. Wait for response with timeout
+    // 5. Wait for response with timeout
     let mut buf = [0u8; 1024];
 
     // Use timeout as UDP packets can be lost.
@@ -101,7 +117,7 @@ pub async fn resolve_public_ip(
 
     debug!("Received {} bytes from {}", len, sender_addr);
 
-    // 4. Parse and validate response
+    // 6. Parse and validate response
     let mut response = Message::new();
     response.unmarshal_binary(&buf[..len])?;
 
@@ -113,7 +129,7 @@ pub async fn resolve_public_ip(
         );
     }
 
-    // 5. Extract the public IP
+    // 7. Extract the public IP
     let mut xor_addr = XorMappedAddress::default();
     xor_addr
         .get_from(&response)
