@@ -34,6 +34,12 @@ pub struct AppState {
     /// Peer's IP address.
     pub peer_ip: Option<SocketAddr>,
 
+    // --- ENCRYPTION STATE ---
+    /// The Short Authentication String (SAS) fingerprint for manual verification.
+    pub fingerprint: Option<String>,
+    /// The name of the negotiated encryption algorithm (e.g., "ChaCha20-Poly1305").
+    pub encryption_algo: Option<String>,
+    // ------------------------
     /// Channel for sending commands to the controller.
     #[serde(skip)]
     cmd_tx: mpsc::Sender<Command>,
@@ -57,6 +63,8 @@ impl AppState {
             nat_type: NatType::default(),
             status: Status::default(),
             peer_ip: None,
+            fingerprint: None,
+            encryption_algo: None,
             cmd_tx,
             event_tx,
         }
@@ -85,7 +93,7 @@ impl AppState {
         self.local_ip = Some(addr);
         self.broadcast_status_change(message, timeout);
     }
-
+    #[allow(dead_code)]
     /// Updates public IP and notifies listeners.
     pub fn set_public_ip(
         &mut self,
@@ -121,6 +129,16 @@ impl AppState {
         self.broadcast_status_change(message, timeout);
     }
 
+    /// Updates the security details for the current session.
+    /// This is called by the handshake module upon successful key exchange.
+    pub fn set_security_info(&mut self, fingerprint: String, algorithm: String) {
+        self.fingerprint = Some(fingerprint);
+        self.encryption_algo = Some(algorithm);
+        // Note: We do not broadcast here immediately;
+        // the handshake usually calls set_status(Connected) right after,
+        // which triggers the broadcast with this new data included.
+    }
+
     /// Broadcasts current state to all active listeners.
     ///
     /// Constructs an event based on the current status and sends it
@@ -134,8 +152,12 @@ impl AppState {
             },
             // During punching, sends progress updates and timeouts.
             Status::Punching => AppEvent::Punching { timeout, message },
-            // When connected, sends status messages.
-            Status::Connected => AppEvent::Connected { message },
+            // When connected, sends status messages AND security info.
+            Status::Connected => AppEvent::Connected {
+                message,
+                fingerprint: self.fingerprint.clone(),
+                encryption_algo: self.encryption_algo.clone(),
+            },
         };
         self.broadcast_event(event);
     }
@@ -160,6 +182,7 @@ impl AppState {
 ///
 /// Determines if direct P2P connections are possible.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub enum NatType {
     /// NAT type not yet determined.
     #[default]
@@ -197,6 +220,10 @@ pub enum AppEvent {
     Connected {
         /// System or peer message.
         message: Option<String>,
+        /// SAS Fingerprint for UI verification
+        fingerprint: Option<String>,
+        /// Algorithm used
+        encryption_algo: Option<String>,
     },
 
     Message {

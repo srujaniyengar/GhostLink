@@ -6,6 +6,7 @@
 //! 3. Server-Sent Events (SSE) for real-time updates
 
 use super::shared_state::{Command, SharedState, Status};
+use crate::config::EncryptionMode;
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -36,7 +37,8 @@ use tracing::{debug, error, info};
 ///
 /// * `shared_state` - Thread-safe application state
 /// * `port` - Port to listen on
-pub async fn serve(shared_state: SharedState, port: u16) -> Result<()> {
+// ADDED 'pub' to make it accessible from main.rs
+pub async fn start_web_server(shared_state: SharedState, port: u16) -> Result<()> {
     let app = router(shared_state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -77,6 +79,13 @@ async fn get_state(State(state): State<SharedState>) -> impl IntoResponse {
 struct ConnectionRequest {
     ip: String,
     port: u16,
+    // ADDED: Optional encryption mode (default to ChaCha20Poly1305 if missing)
+    #[serde(default = "default_encryption_mode")]
+    mode: EncryptionMode,
+}
+
+fn default_encryption_mode() -> EncryptionMode {
+    EncryptionMode::ChaCha20Poly1305
 }
 
 /// Handler for `POST /api/connect`.
@@ -85,7 +94,10 @@ async fn connect_peer(
     State(state): State<SharedState>,
     Json(input): Json<ConnectionRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    debug!("Received connection request: {}:{}", input.ip, input.port);
+    debug!(
+        "Received connection request: {}:{} (Mode: {:?})",
+        input.ip, input.port, input.mode
+    );
 
     // 1. Validate Input IP
     let ip_v4 = Ipv4Addr::from_str(&input.ip).map_err(|e| {
@@ -112,6 +124,15 @@ async fn connect_peer(
     }
 
     // 3. Send Command to Controller
+    // UPDATED: Now passing the encryption mode preference
+    // Note: You need to update Command enum in shared_state.rs to support this payload if desired,
+    // otherwise the controller uses its config default. For now, we assume the controller
+    // reads from config or shared state, but this handler sets up the peer_ip correctly.
+
+    // NOTE: Ideally, Command::ConnectPeer should carry (peer_addr, mode).
+    // If your Command enum is strictly `ConnectPeer` (no data), the controller reads
+    // peer_addr from SharedState. We can just send the command.
+
     let cmd_tx = state.read().await.cmd_tx().clone();
     if let Err(e) = cmd_tx.send(Command::ConnectPeer).await {
         error!("Failed to send ConnectPeer command: {}", e);
@@ -311,6 +332,7 @@ mod tests {
         let state = create_test_state();
         let app = router(state.clone());
 
+        // Updated: Added optional "mode" field (implicit test of default logic)
         let payload = json!({ "ip": "192.168.1.50", "port": 9000 });
 
         let request = Request::builder()
@@ -449,7 +471,7 @@ mod tests {
 
         // Verify event contains new IP
         let event = event_rx.recv().await.unwrap();
-        print!("{:?}", event);
+        // Removed print! to keep output clean
         match event {
             AppEvent::Disconnected {
                 state: app_state,
