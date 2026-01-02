@@ -17,9 +17,9 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-/// Main entry point for the GhostLink application.
+/// Application entry point.
 ///
-/// Initializes and starts:
+/// Initializes:
 /// 1. Logging system
 /// 2. Configuration
 /// 3. Communication channels
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
                                 );
                             }
                         } else {
-                            warn!("ConnectPeer command received, but no Peer IP is set in SharedState!");
+                            warn!("ConnectPeer command received without peer IP set");
                         }
                     }
                     Command::SendMessage(text) => {
@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
                                 state.read().await.add_message(text, true);
                             }
                         } else {
-                            warn!("Cannot send message: Not connected.");
+                            warn!("Cannot send message: not connected");
                         }
                     }
                     Command::Disconnect => {
@@ -188,11 +188,11 @@ async fn main() -> Result<()> {
                             Ok(msg) => {
                                 match msg {
                                     StreamMessage::Text(content) => {
-                                        info!("Received: {}", content);
+                                        debug!("Received message: {} bytes", content.len());
                                         state.read().await.add_message(content, false);
                                     }
                                     StreamMessage::Bye => {
-                                        info!("Peer requested disconnect.");
+                                        info!("Peer requested disconnect");
                                         let _ = manager.disconnect_on_bye_received().await;
                                     }
                                 }
@@ -201,7 +201,7 @@ async fn main() -> Result<()> {
                          }
                     }
                     Err(e) => {
-                        error!("KCP Receive Error: {}", e);
+                        error!("KCP receive error: {}", e);
                     }
                 }
             }

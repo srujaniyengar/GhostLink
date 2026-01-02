@@ -37,7 +37,6 @@ use tracing::{debug, error, info};
 ///
 /// * `shared_state` - Thread-safe application state
 /// * `port` - Port to listen on
-// ADDED 'pub' to make it accessible from main.rs
 pub async fn start_web_server(shared_state: SharedState, port: u16) -> Result<()> {
     let app = router(shared_state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -79,7 +78,6 @@ async fn get_state(State(state): State<SharedState>) -> impl IntoResponse {
 struct ConnectionRequest {
     ip: String,
     port: u16,
-    // ADDED: Optional encryption mode (default to ChaCha20Poly1305 if missing)
     #[serde(default = "default_encryption_mode")]
     mode: EncryptionMode,
 }
@@ -123,16 +121,8 @@ async fn connect_peer(
         guard.set_peer_ip(peer_addr, Some("Target set via API".into()), None);
     }
 
-    // 3. Send Command to Controller
-    // UPDATED: Now passing the encryption mode preference
-    // Note: You need to update Command enum in shared_state.rs to support this payload if desired,
-    // otherwise the controller uses its config default. For now, we assume the controller
-    // reads from config or shared state, but this handler sets up the peer_ip correctly.
-
-    // NOTE: Ideally, Command::ConnectPeer should carry (peer_addr, mode).
-    // If your Command enum is strictly `ConnectPeer` (no data), the controller reads
-    // peer_addr from SharedState. We can just send the command.
-
+    // 3. Send command to controller
+    // Controller reads peer_addr from SharedState
     let cmd_tx = state.read().await.cmd_tx().clone();
     if let Err(e) = cmd_tx.send(Command::ConnectPeer).await {
         error!("Failed to send ConnectPeer command: {}", e);

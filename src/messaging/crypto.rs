@@ -1,9 +1,9 @@
-//! Cryptographic primitives for GhostLink v1.1.
+//! Cryptographic primitives for GhostLink.
 //!
-//! Handles X25519 key exchange, HKDF key derivation, and
+//! Provides X25519 key exchange, HKDF key derivation, and
 //! AEAD encryption/decryption (ChaCha20-Poly1305 / AES-256-GCM).
 
-use crate::config::EncryptionMode;
+use super::super::config::EncryptionMode;
 use aes_gcm::{
     Aes256Gcm, Nonce as AesNonce,
     aead::{Aead, KeyInit},
@@ -16,7 +16,7 @@ use sha2::Sha256;
 use std::fmt;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-/// Represents an X25519 key pair used for Diffie-Hellman key exchange.
+/// X25519 key pair for Diffie-Hellman key exchange.
 pub struct KeyPair {
     pub private: StaticSecret,
     pub public: PublicKey,
@@ -30,7 +30,7 @@ impl KeyPair {
     }
 }
 
-/// Enum representing the supported authenticated encryption algorithms.
+/// Supported authenticated encryption algorithms.
 pub enum CipherAlgo {
     ChaCha20(ChaCha20Poly1305),
     Aes256(Box<Aes256Gcm>),
@@ -46,20 +46,20 @@ impl fmt::Debug for CipherAlgo {
 }
 
 impl CipherAlgo {
-    /// Encrypts the provided plaintext using the session's cipher.
+    /// Encrypts plaintext using session cipher.
     ///
-    /// The nonce is constructed from the provided counter value to ensure uniqueness
+    /// Nonce is constructed from counter value to ensure uniqueness
     /// for every packet in the stream.
     ///
     /// # Arguments
     ///
-    /// * `nonce_val` - A strictly increasing counter (sequence number).
-    /// * `plaintext` - The raw data to encrypt.
+    /// * `nonce_val` - Strictly increasing counter (sequence number).
+    /// * `plaintext` - Raw data to encrypt.
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<u8>)` - The authenticated ciphertext (including tag).
-    /// * `Err` - If the encryption operation fails.
+    /// * `Ok(Vec<u8>)` - Authenticated ciphertext (including tag).
+    /// * `Err` - Encryption operation failed.
     pub fn encrypt(&self, nonce_val: u64, plaintext: &[u8]) -> Result<Vec<u8>> {
         match self {
             CipherAlgo::ChaCha20(cipher) => {

@@ -1,6 +1,10 @@
-use super::super::web::shared_state::{SharedState, Status};
-use super::crypto::{KeyPair, SessionData, derive_session};
-use crate::config::EncryptionMode;
+use super::{
+    super::{
+        config::EncryptionMode,
+        web::shared_state::{SharedState, Status},
+    },
+    crypto::{KeyPair, SessionData, derive_session},
+};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
@@ -8,9 +12,9 @@ use tokio::{
     net::UdpSocket,
     time::{Duration, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-/// Represents handshake message being sent or received.
+/// Represents handshake message sent or received.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum HandshakeMsg {
     Syn {
@@ -23,24 +27,24 @@ pub enum HandshakeMsg {
     Bye,
 }
 
-/// Performs a UDP hole punching and secure key exchange handshake with a remote peer.
+/// Performs UDP hole punching and secure key exchange handshake with remote peer.
 ///
-/// This function attempts to establish a bidirectional connection by sending SYN packets
-/// (containing the local public key) to the peer while also listening for incoming responses.
-/// It handles the "Punching" state updates and transitions to "Connected" upon success.
+/// Establishes bidirectional connection by sending SYN packets (containing local public key)
+/// while listening for responses. Handles "Punching" state updates and transitions to
+/// "Connected" upon success.
 ///
 /// # Arguments
 ///
-/// * `client_socket` - The local UDP socket to use. Wrapped in `Arc` for thread safety.
-/// * `peer_addr` - The public IP address and port of the target peer.
-/// * `state` - The shared application state to update status and UI events.
-/// * `timeout_secs` - The maximum duration (in seconds) to attempt the handshake.
-/// * `my_mode` - The preferred encryption mode for this session.
+/// * `client_socket` - Local UDP socket. Wrapped in `Arc` for thread safety.
+/// * `peer_addr` - Public IP address and port of target peer.
+/// * `state` - Shared application state for status and UI event updates.
+/// * `timeout_secs` - Maximum duration (in seconds) to attempt handshake.
+/// * `my_mode` - Preferred encryption mode for session.
 ///
 /// # Returns
 ///
-/// * `Ok(SessionData)` - If the handshake succeeds, returns the derived session keys.
-/// * `Err` - If the operation times out, is rejected, mode mismatches, or a socket error occurs.
+/// * `Ok(SessionData)` - Handshake succeeded, returns derived session keys.
+/// * `Err` - Operation timed out, was rejected, mode mismatch, or socket error occurred.
 pub async fn handshake(
     client_socket: Arc<UdpSocket>,
     peer_addr: SocketAddr,
@@ -70,7 +74,7 @@ pub async fn handshake(
     // to ensure the peer receives the final ACK.
     let mut linger_until: Option<Instant> = None;
 
-    info!("Starting secure handshake with {}", peer_addr);
+    debug!("Starting handshake with {}", peer_addr);
 
     // Update initial state
     {
@@ -142,7 +146,7 @@ pub async fn handshake(
                                 bail!(err_msg);
                             }
 
-                            info!("Received SYN from {}. Mode: {:?}.", sender, cipher_mode);
+                            debug!("Received SYN from {}, mode: {:?}", sender, cipher_mode);
 
                             // Send SYN-ACK
                             let reply = bincode::serialize(&HandshakeMsg::SynAck {
@@ -169,7 +173,7 @@ pub async fn handshake(
                                 peer_pub_key = Some(public_key);
                             }
 
-                            info!("Received SYN-ACK from {}.", sender);
+                            debug!("Received SYN-ACK from {}", sender);
                             received_syn_ack = true;
 
                             // Notify UI

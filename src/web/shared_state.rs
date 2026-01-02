@@ -129,14 +129,14 @@ impl AppState {
         self.broadcast_status_change(message, timeout);
     }
 
-    /// Updates the security details for the current session.
-    /// This is called by the handshake module upon successful key exchange.
+    /// Updates security details for current session.
+    /// Called by handshake module upon successful key exchange.
     pub fn set_security_info(&mut self, fingerprint: String, algorithm: String) {
         self.fingerprint = Some(fingerprint);
         self.encryption_algo = Some(algorithm);
-        // Note: We do not broadcast here immediately;
-        // the handshake usually calls set_status(Connected) right after,
-        // which triggers the broadcast with this new data included.
+        // Note: Does not broadcast immediately.
+        // Handshake typically calls set_status(Connected) right after,
+        // which triggers broadcast with this new data included.
     }
 
     /// Broadcasts current state to all active listeners.
