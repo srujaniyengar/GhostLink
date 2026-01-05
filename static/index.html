@@ -52,7 +52,7 @@
                                     <div class="info-label">PUBLIC_ENDPOINT</div>
                                     <div class="info-val-group large">
                                         <span class="ip-text" id="myIpDisplay">--.--.--.--</span>
-                                        <button class="icon-btn" id="copyBtn">COPY</button>
+                                        <button class="icon-btn" id="copyBtn" type="button">COPY</button>
                                     </div>
                                 </div>
 
@@ -60,7 +60,7 @@
                                     <div class="info-label">LOCAL_ENDPOINT</div>
                                     <div class="info-val-group large">
                                         <span class="ip-text" id="myLocalIpDisplay">--.--.--.--</span>
-                                        <button class="icon-btn" id="copyLocalBtn">COPY</button>
+                                        <button class="icon-btn" id="copyLocalBtn" type="button">COPY</button>
                                     </div>
                                 </div>
                                 <div id="apiErrorMsg" class="error-msg"></div>
@@ -117,7 +117,7 @@
                         <div id="vizPeerIp" style="display: none;"></div>
 
                         <div class="abort-container">
-                             <button id="cancelPunchBtn" class="btn-secondary">ABORT SEQUENCE</button>
+                             <button id="cancelPunchBtn" class="btn-secondary" type="button">ABORT SEQUENCE</button>
                         </div>
                     </div>
 
@@ -143,8 +143,8 @@
                             </div>
                         </div>
                         <div class="header-actions">
-                            <button id="verifyIdentityBtn" class="icon-btn" style="margin-right: 15px;">VERIFY FINGERPRINT</button>
-                            <button id="disconnectBtn" class="btn-danger">TERMINATE UPLINK</button>
+                            <button id="verifyIdentityBtn" class="icon-btn" style="margin-right: 15px;" type="button">VERIFY FINGERPRINT</button>
+                            <button id="disconnectBtn" class="btn-danger" type="button">TERMINATE UPLINK</button>
                         </div>
                     </div>
                     
@@ -166,7 +166,7 @@
         <div class="modal-window">
             <div class="modal-header">
                 <span>IDENTITY_VERIFICATION</span>
-                <button id="closeSasBtn" class="icon-btn">X</button>
+                <button id="closeSasBtn" class="icon-btn" type="button">X</button>
             </div>
             <div class="modal-body">
                 <p>COMPARE THIS FINGERPRINT WITH YOUR PEER TO VERIFY E2EE INTEGRITY:</p>

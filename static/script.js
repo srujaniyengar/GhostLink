@@ -131,6 +131,9 @@ function syncState(data) {
 function handleStatusChange(statusStr, data = {}) {
     const normStatus = (statusStr || 'DISCONNECTED').toUpperCase();
     
+    // Safety check: Close modals if state changes (e.g. disconnects)
+    if (els.sasModal) els.sasModal.classList.remove('active');
+
     if (normStatus === 'DISCONNECTED' && data.state) {
         syncState(data.state);
         renderMyInfo(true);
@@ -204,22 +207,26 @@ async function enterConnectedState(data) {
     }
 
     // Optional: Send identity if username was set
+    // This logic handles potential double-calls of enterConnectedState
     if (state.username) {
         sendIdentityMessage();
     }
 }
 
 function sendIdentityMessage() {
+    // Capture and clear immediately to prevent double-send race conditions
+    const nameToSend = state.username;
+    if (!nameToSend) return;
+    state.username = null;
+
     // Small delay to ensure connection is ready
     setTimeout(async () => {
         try {
             await fetch('/api/message', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: `IDENTIFIED AS: ${state.username}` })
+                body: JSON.stringify({ message: `IDENTIFIED AS: ${nameToSend}` })
             });
-            // Clear username so we don't send it again on re-renders
-            state.username = null; 
         } catch (e) {
             console.warn("Failed to send identity", e);
         }
@@ -458,7 +465,8 @@ async function handleDisconnect(e) {
 }
 
 // --- Modal Logic ---
-function toggleSasModal() {
+function toggleSasModal(e) {
+    if (e) e.preventDefault();
     if (els.sasModal.classList.contains('active')) {
         els.sasModal.classList.remove('active');
     } else {
